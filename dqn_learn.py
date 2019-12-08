@@ -38,28 +38,12 @@ from torch.autograd import Variable
 '''
 
 
-#参数
-num_episodes = 50
-BATCH_SIZE = 128
-GAMMA = 0.999
-EPS_START = 0.9
-EPS_END = 0.05
-EPS_DECAY = 200
-TARGET_UPDATE = 10
-learning_rate=0.01
-buffer_size=100000
-U_num=3
-num_actions=27
-TAU= 0.001
-device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-actions = ['100', '010', '001']
-actions_list = [[x,y,z] for x in actions for y in actions for z in actions]
-node_loc = np.random.randint(0,101,3).tolist()   #边缘节点位置 1-100号
-
-
+# auxiliary_func
 def random_displacement(state0): # 上下左右 -10，10，-1，1
+    ''' Randomly generate users movement for next state '''
     ra = []
     for u in state0:
+        # on the corner
         if u == 1:
             ra.append(random.choice([10,1]))
         elif u == 10:
@@ -68,6 +52,7 @@ def random_displacement(state0): # 上下左右 -10，10，-1，1
             ra.append(random.choice([-10,1]))
         elif u == 100:
             ra.append(random.choice([-10,-1]))
+        # on the edge
         elif u < 11:
             ra.append(random.choice([10,-1,1]))
         elif u > 90:
@@ -76,6 +61,7 @@ def random_displacement(state0): # 上下左右 -10，10，-1，1
             ra.append(random.choice([-10,10,1]))
         elif u % 10 == 0:
             ra.append(random.choice([-10,10,-1]))
+        # insides
         else:
             ra.append(random.choice([-10,10,-1,1]))
     return ra
@@ -86,29 +72,31 @@ def e_greedy_select_action(state):
     随机选择动作的目的是为了更多的探索有效空间。
     该函数需要根据我们的action进行更改
     '''
-    global steps_done
-    sample = random.random(-1,1)
+    sample = random.uniform(-1,1)
     if sample > 0:
         with torch.no_grad():
             return policy_net(state).max(1)[1].view(1, 1)
     else:
         return torch.tensor([[random.randrange(2)]], device=device, dtype=torch.long)
 
-def transition_function(state,action):
+def transition_function(state, action):
     '''
     状态转移函数
     该函数输入为当前状态和动作，输出为下一个状态和终止字符（判断是否为终止状态 true or false）
     return next_state,done,flag
     '''
     #action为1-27某值
-    state_t = copy(state)
+    state_t = copy.deepcopy(state)
     act = actions_list[action]
     sou_dst = []
-    i = 0
-    for a in act:
-        sou_dst.append([i, a.find('1')])
-        state_t[2][i] = node_loc[sou_dst[i][1]]
-        i += 1
+
+    # transit node_loc
+    for i, a in enumerate(act):
+        sou_dst.append(a.find('1'))
+        state_t[2][i] = node_loc[sou_dst[i]]
+
+    # check if edge node meets the demand of two users
+    # if not, no change on state and set flag = 0, thus negative reward
     if state_t[2][0] == state_t[2][1]:
         if state_t[3][0] + state_t[3][1] > 10:
             return state,0,0
@@ -121,35 +109,45 @@ def transition_function(state,action):
     if state_t[2][0] == state_t[2][1] & state_t[2][0] == state_t[2][2]:
         if state_t[3][0] + state_t[3][1] + state_t[3][2]> 10:
             return state,0,0
+    
+    # transit user_loc
     state_t[0] = [state_t[0][j]+state_t[1][j] for j in range(3)]
+    # generate new movement
     state_t[1] = random_displacement(state_t[0])
     return state_t,0,1
 
-
-
-def reward_function(state,action,next_state,flag):
+def reward_function(state, action, next_state, flag):
     '''
     奖励函数
     输入为当前状态，动作，下一个状态
     返回一个当前的奖惩值
     return reward
     '''
+    # unfeasible displacement
     if flag == 0:
-        return -9999
+        return -9999, 0
+
+    # changes of node_loc from state to next_state
     sou_dst = []
-    for i in range(3):
-        sou_dst.append([i, action[i].find('1')])
+    for i, a in zip(state[2], action):
+        sou_dst.append([i, a.find('1')])
+
     cost = 0
     for i in range(3):
+        # expense of state = power(distance_u2n, 2) + communication delay of use_buff
         origin = ((state[0][i]%10-state[2][i]%10)**2+(state[0][i]//10-state[2][i]//10)**2) + state[3][i]/2
+        # expense of next_state = change1 + change2, where
+        # change1 = power(distance_u2n, 2) + communication delay of use_buff
+        # change2 = power(distance_n2n, 2), i.e. expense of migration between nodes
         change1 = ((next_state[0][i]%10-next_state[2][i]%10)**2+(next_state[0][i]//10-next_state[2][i]//10)**2) + next_state[3][i]/2
         change2 = 0
         for j in sou_dst:
             change2 += ((node_loc[j[0]]%10-node_loc[j[1]]%10)**2+(node_loc[j[0]]//10-node_loc[j[1]]//10)**2)/5
+        # return positive reward only when (expense of state > expense of next_state)
         cost += origin - change1 - change2
-    return cost
+    return cost, change2
 
-def optimize_model(batch,policy_net,target_net,optimizer_policy,criterion):
+def optimize_model(batch, policy_net, target_net, optimizer_policy, criterion):
     states = torch.tensor(np.asarray([e[0] for e in batch]), device=device).float()
     states.requires_grad_()
 
@@ -187,8 +185,40 @@ def optimize_model(batch,policy_net,target_net,optimizer_policy,criterion):
 
     return policy_net,target_net
 
-#主程序部分
 
+#参数
+BATCH_SIZE = 128
+GAMMA = 0.999
+EPS_START = 0.9
+EPS_END = 0.05
+EPS_DECAY = 200
+TARGET_UPDATE = 10
+TAU= 0.001
+
+MAX_T = 1000
+num_episodes = 50
+learning_rate=0.01
+
+buffer_size=100000
+# node_capacity = 10 # capacity of each edge node
+U_num=3
+num_actions=27
+actions = ['100', '010', '001']
+actions_list = [[x,y,z] for x in actions for y in actions for z in actions]
+node_loc = np.random.randint(0, 101, U_num).tolist()   #边缘节点位置 1-100号 (so we suppose that node_num == U_num???)
+
+user_loc = np.random.randint(0, 101, U_num).tolist()   #用户位置 1-100号
+user_dis = random_displacement(user_loc)   #用户未来位移 上下左右 -10，10，-1，1
+use_buff = np.random.randint(3, 8, U_num).tolist()   #资源所需
+state0 = [user_loc,
+          user_dis,
+          node_loc,
+          use_buff]
+
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+
+#主程序部分
 
 policy_net = DQN(U_num, num_actions).to(device)  #初始化Q网络
 target_net = DQN(U_num, num_actions).to(device)  #初始化target_Q网络
@@ -198,16 +228,7 @@ optimizer_policy = torch.optim.Adam(policy_net.parameters(), lr=learning_rate)  
 buffer = ReplayBuffer(buffer_size)  #定义一个经验池  PS：经验池储存经验数据，后随机从经验池中抽取经验数据来训练更新网络参数 在Buffer.py中
 criterion = torch.nn.MSELoss(reduction='sum')
 
-
-
-user_loc = np.random.randint(0,101,3).tolist()   #用户位置 1-100号
-user_dis = random_displacement(user_loc)   #用户未来位移 上下左右 -10，10，-1，1
-use_buff = np.random.randint(3,8,3).tolist()   #资源所需
-state0 = [user_loc,
-          user_dis,
-          node_loc,
-          use_buff]
-
+# training
 for i_episode in range(num_episodes):
 
     #state0 #获得一个初始化状态
@@ -215,12 +236,17 @@ for i_episode in range(num_episodes):
     for t in count():
         # 选择动作
         action = e_greedy_select_action(state0)
+        print("action selected by e_greedy is {}".format(action))
         # 利用状态转移函数，得到当前状态下采取当前行为得到的下一个状态，和下一个状态的终止情况
-        state1, done, flag = transition_function(state0,action)
+        state1, done, flag = transition_function(state0, action)
         # 利用奖励函数，获得当前的奖励值
-        reward = reward_function(state0,action,state1,flag)
+        reward, cost_migration = reward_function(state0, action, state1, flag)
         # 将经验数据存储至buffer中
         buffer.add(state0, action, reward, state1, done)
+
+        # exit an episode after MAX_T steps
+        if t > MAX_T:
+            break
 
         #当episode>10时进行网络参数更新，目的是为了让经验池中有较多的数据，使得训练较为稳定。
         if i_episode>10:
@@ -233,5 +259,42 @@ for i_episode in range(num_episodes):
         # 进入下一状态
         state0 = state1
 
+# testing
+long_term_rewards = []
+long_term_cost_migrations = []
+for i_episode in range(num_episodes):
 
+    #state0 #获得一个初始化状态
+    long_term_reward = 0
+    long_term_cost_migration = 0
 
+    for t in count():
+        # 选择动作
+        action = e_greedy_select_action(state0)
+        print("action selected by e_greedy is {}".format(action))
+        # 利用状态转移函数，得到当前状态下采取当前行为得到的下一个状态，和下一个状态的终止情况
+        state1, done, flag = transition_function(state0, action)
+        # 利用奖励函数，获得当前的奖励值
+        reward, cost_migration = reward_function(state0, action, state1, flag)
+
+        # record
+        long_term_reward += reward
+        long_term_cost_migration += cost_migration
+        
+        # 将经验数据存储至buffer中
+        buffer.add(state0, action, reward, state1, done)
+
+        # exit an episode after MAX_T steps
+        if t >= MAX_T:
+            long_term_reward /= t
+            long_term_cost_migration /= t
+            break
+
+        # 进入下一状态
+        state0 = state1
+
+    long_term_rewards.append(long_term_reward)
+    long_term_cost_migrations.append(long_term_cost_migration)
+
+print('avg long-term reward: {}'.format(np.mean(long_term_rewards)))
+print('avg long-term cost of migration: {}'.format(np.mean(long_term_cost_migrations)))
