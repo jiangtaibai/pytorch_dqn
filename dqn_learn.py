@@ -77,7 +77,7 @@ def e_greedy_select_action(state):
         with torch.no_grad():
             return policy_net(state).max(1)[1].view(1, 1)
     else:
-        return torch.tensor([[random.randrange(2)]], device=device, dtype=torch.long)
+        return torch.tensor([[random.randrange(2)]], device=device, dtype=torch.long)[0, 0]
 
 def transition_function(state, action):
     '''
