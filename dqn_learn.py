@@ -75,9 +75,12 @@ def e_greedy_select_action(state):
     sample = random.uniform(-1,1)
     if sample > 0:
         with torch.no_grad():
-            return policy_net(state).max(1)[1].view(1, 1)
+            temp = policy_net(torch.tensor(state, dtype=torch.float).flatten())
+            # print('sample is {}, with state {} and policy {} and max {}'.format(sample, state, temp, temp.argmax()))
+            # return policy_net(torch.tensor(state, dtype=torch.float).flatten()).max(1)[1].view(1, 1)
+            return temp.argmax()
     else:
-        return torch.tensor([[random.randrange(2)]], device=device, dtype=torch.long)[0, 0]
+        return torch.tensor([[random.randrange(27)]], device=device, dtype=torch.long)[0, 0]
 
 def transition_function(state, action):
     '''
@@ -129,8 +132,10 @@ def reward_function(state, action, next_state, flag):
 
     # changes of node_loc from state to next_state
     sou_dst = []
-    for i, a in zip(state[2], action):
+    print('reward_function:', state[2], action)
+    for i, a in zip(state[2], actions_list[action]):
         sou_dst.append([i, a.find('1')])
+    print('reward_function:', sou_dst)
 
     cost = 0
     for i in range(3):
@@ -142,13 +147,16 @@ def reward_function(state, action, next_state, flag):
         change1 = ((next_state[0][i]%10-next_state[2][i]%10)**2+(next_state[0][i]//10-next_state[2][i]//10)**2) + next_state[3][i]/2
         change2 = 0
         for j in sou_dst:
-            change2 += ((node_loc[j[0]]%10-node_loc[j[1]]%10)**2+(node_loc[j[0]]//10-node_loc[j[1]]//10)**2)/5
+            print('in sou_dst:', j)
+            # change2 += ((node_loc[j[0]]%10-node_loc[j[1]]%10)**2+(node_loc[j[0]]//10-node_loc[j[1]]//10)**2)/5
+            change2 += ((j[0]%10-node_loc[j[1]]%10)**2+(j[0]//10-node_loc[j[1]]//10)**2)/5
         # return positive reward only when (expense of state > expense of next_state)
         cost += origin - change1 - change2
     return cost, change2
 
 def optimize_model(batch, policy_net, target_net, optimizer_policy, criterion):
-    states = torch.tensor(np.asarray([e[0] for e in batch]), device=device).float()
+    states = torch.tensor(np.asarray([np.array(e[0]).flatten() for e in batch]), device=device).float()
+    # states = torch.tensor(np.asarray([e[0] for e in batch]), device=device).float()
     states.requires_grad_()
 
     actions = torch.tensor(np.asarray([e[1] for e in batch]), device=device).float()
@@ -157,15 +165,18 @@ def optimize_model(batch, policy_net, target_net, optimizer_policy, criterion):
     rewards = torch.tensor(np.asarray([e[2] for e in batch]), device=device).float()
     rewards.requires_grad = True
 
-    new_states = torch.tensor(np.asarray([e[3] for e in batch]), device=device).float()
+    # new_states = torch.tensor(np.asarray([e[3] for e in batch]), device=device).float()
+    new_states = torch.tensor(np.asarray([np.array(e[3]).flatten() for e in batch]), device=device).float()
     new_states.requires_grad = True
 
-    dones = [e[4] for e in batch]
+    dones = np.array([e[4] for e in batch])
 
-    not_done_mask = Variable(torch.from_numpy(1 - dones)).type(torch.cuda.FloatTensor)
+    # not_done_mask = Variable(torch.from_numpy(1 - dones)).type(torch.cuda.FloatTensor)
+    not_done_mask = Variable(torch.from_numpy(1 - dones))
+
 
     #根据梯度进行网络参数的更新
-    current_Q_values = policy_net(states).gather(1, actions.unsqueeze(1))
+    current_Q_values = policy_net(states).gather(1, actions.unsqueeze(1).long())
     next_max_q = target_net(new_states).detach().max(1)[0]
     next_Q_values = not_done_mask * next_max_q
     target_Q_values = rewards + (GAMMA * next_Q_values)
